@@ -1,0 +1,68 @@
+import json
+import boto3
+import urllib.request
+
+s3_resource = boto3.resource('s3')
+s3_client = boto3.client('s3')
+dynamodb_resource = boto3.resource('dynamodb')
+transcribe_client = boto3.client('transcribe')
+
+# Generate a presigned URL for the S3 object
+def create_presigned_url(bucket_name, object_name, expiration=604800):
+    response_sign = s3_client.generate_presigned_url('get_object',
+        Params={
+            'Bucket': bucket_name,
+            'Key': object_name
+        },
+        ExpiresIn=expiration)
+      
+    #return url for future call
+    return response_sign
+
+#Generate txt file with only body of text from transcribe job
+def lambda_handler(event, context):
+    job_name = event['detail']['TranscriptionJobName']
+    dynamoTable = dynamodb_resource.Table('UICallRecordings_Metadata')
+    print(job_name)
+    job = transcribe_client.get_transcription_job(TranscriptionJobName = job_name)
+    uri = job['TranscriptionJob']['Transcript']['TranscriptFileUri']
+    
+    
+    #create signed url for transcription file
+    signed_transc_url = str(create_presigned_url('ab-transcribe-output',job_name+".json"))
+    print("Transc URL: " + signed_transc_url)
+    
+    #create new prefix specifically for file
+    bucket_name = 'ab-transcribe-output'
+    directory_name = 'TranscriptionText/'+job_name+'/'
+    print(directory_name)
+    # response_prefix = s3_client.put_object(Bucket=bucket_name, Key=(directory_name))
+    
+    #pull text body from trancript txt and generate new txt with only this data  
+    content = urllib.request.urlopen(signed_transc_url).read().decode('UTF-8')
+    data = json.loads(content)
+    transcribed_text = data['results']['transcripts'][0]['transcript']
+    object = s3_resource.Object(bucket_name,directory_name+job_name+"_Output.txt")
+    object.put(Body=transcribed_text)
+    
+    #create signed url for transcription txt file
+    signed_txt_url = str(create_presigned_url(bucket_name,directory_name+job_name+"_Output.txt"))
+    print("Txt URL: " + signed_txt_url)
+    
+    # Post transcribe metadata into Dynamodb table
+    shortKey = str(job_name.split('-', 1)[1])
+    secondaryKey = str(shortKey.split('.', 1)[0])
+    Status = data['status']
+    response_post = dynamoTable.update_item(
+        TableName = 'UICallRecordings_Metadata',
+        Key = {
+            'User_ID': str(job_name.split('-', 1)[0]),
+            'Claim_ID': secondaryKey
+        },
+        UpdateExpression = "set Transcription_URL = :u",
+        ExpressionAttributeValues = {
+            ':u': signed_txt_url
+        },
+        ReturnValues="UPDATED_NEW"
+    )
+    return response_post
