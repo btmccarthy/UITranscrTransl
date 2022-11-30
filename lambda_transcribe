@@ -1,0 +1,68 @@
+import json
+import urllib.parse
+import boto3
+import uuid
+
+print('Loading function')
+
+s3_client = boto3.client('s3')
+dynamodb_client = boto3.resource('dynamodb')
+transcribe_client = boto3.client('transcribe')
+
+# Generate a presigned URL for the S3 object    
+def create_presigned_url(bucket_name, object_name, expiration=604800):
+    response_sign = s3_client.generate_presigned_url('get_object',
+        Params={
+            'Bucket': bucket_name,
+            'Key': object_name
+        },
+        ExpiresIn=expiration)
+                
+    # The response contains the presigned URL
+    return response_sign
+
+def lambda_handler(event, context):
+    #print("Received event: " + json.dumps(event, indent=2))
+
+    # Get the object from the event and show its content type
+    bucket = event['Records'][0]['s3']['bucket']['name']
+    key = urllib.parse.unquote_plus(event['Records'][0]['s3']['object']['key'], encoding='utf-8')
+    event_time = event['Records'][0]['eventTime']
+    dynamoTable = dynamodb_client.Table('UICallRecordings_Metadata')
+    object_url = 'https://s3.amazonaws.com/{0}/{1}'.format(bucket, key)
+    print("URL: " + object_url)
+    jobName = key + '-' + str(uuid.uuid4())
+    # response_s3 = s3_client.get_object(Bucket=bucket, Key=key)
+    # print("CONTENT TYPE: " + response_s3['ContentType'])
+        
+    signed_audio_url = str(create_presigned_url(bucket,key))
+    print("Signed Audio URL: " + signed_audio_url)
+    
+    # Transcribe object and load to s3
+    response_transcribe = transcribe_client.start_transcription_job(
+        TranscriptionJobName=jobName,
+        Media={
+            'MediaFileUri': object_url
+        },
+        OutputBucketName = "ab-transcribe-output",
+        Settings={
+            'ShowSpeakerLabels': True,
+            'MaxSpeakerLabels': 2,
+            },
+        IdentifyLanguage=True,
+        LanguageOptions=[
+            'ar-AE','ar-SA','de-DE','en-US','es-US','fr-FR','hi-IN','ko-KR','ru-RU','zh-CN','zh-TW'
+    ],
+        )
+    
+    # Put object metadata into Dynamodb table
+    shortKey = str(key.split('-', 1)[1])
+    secondaryKey = str(shortKey.split('.', 1)[0])
+    dynamoTable.put_item(
+        Item = {
+            'User_ID': str(key.split('-', 1)[0]),
+            'Claim_ID': secondaryKey,
+            'Audio_File_URL': signed_audio_url,
+            'Date_Created': event_time
+        }
+        )
