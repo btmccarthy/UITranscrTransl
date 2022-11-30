@@ -1,0 +1,58 @@
+import json
+import boto3
+import urllib.request
+from botocore.client import Config
+
+s3_client = boto3.client('s3', config=Config(signature_version='s3v4'))
+dynamodb_resource = boto3.resource('dynamodb')
+comprehend_client = boto3.client('comprehend')
+
+# Generate a presigned URL for the S3 object
+def create_presigned_url(bucket_name, object_name, expiration=604800):
+    response_sign = s3_client.generate_presigned_url('get_object',
+        Params={
+            'Bucket': bucket_name,
+            'Key': object_name
+        },
+        ExpiresIn=expiration)
+      
+    #return url for future call
+    return response_sign
+    
+#Post entity detection metadata to dynamodb table
+def lambda_handler(event, context):
+    bucket = event['Records'][0]['s3']['bucket']['name']
+    key = urllib.parse.unquote_plus(event['Records'][0]['s3']['object']['key'], encoding='utf-8')
+    dynamoTable = dynamodb_resource.Table('UICallRecordings_Metadata')
+
+    #create signed url for transcription file
+    signed_entities_url = str(create_presigned_url(bucket,key))
+    print("Events URL: " + signed_entities_url)
+    
+    #pull content from translate and store in data var
+    job_interm = str(key.split('NER-', 1)[1])
+    entities_job = str(job_interm.split('/output', 1)[0])
+    jobContent = comprehend_client.describe_entities_detection_job(
+        JobId = entities_job
+        )
+    
+    # Post transcribe metadata into Dynamodb table
+    jobName = jobContent['EntitiesDetectionJobProperties']['JobName']
+    shortKey = str(jobName.split('en.', 1)[1])
+    shorterKey = str(shortKey.split('-', 1)[1])
+    secondaryKey = str(shorterKey.split('.', 1)[0])
+    # status = jobContent['EntitiesDetectionJobProperties']['JobStatus']
+    response_post = dynamoTable.update_item(
+        TableName = 'UICallRecordings_Metadata',
+        Key = {
+            'User_ID': str(shortKey.split('-', 1)[0]),
+            'Claim_ID': secondaryKey
+        },
+        UpdateExpression = "set Entities_Detection_URL = :u",
+        ExpressionAttributeValues = {
+            ':u': signed_entities_url
+        },
+        ReturnValues="UPDATED_NEW"
+    )
+    
+    return response_post
