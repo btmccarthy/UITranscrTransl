@@ -1,0 +1,25 @@
+import json
+import boto3
+from boto3.dynamodb.conditions import Key, Attr
+
+def lambda_handler(event, context):
+  # print(event)
+  dynamodb_client = boto3.resource('dynamodb', region_name='us-east-1')
+  table = dynamodb_client.Table('UICallRecordings_Metadata')
+  user = event['queryStringParameters']['userid']
+  # user = str(preuser.split('/', 1)[1])
+  # print(user)
+  # user = str(preuser.split('/', 1)[0])
+  response =table.query(
+    KeyConditionExpression=Key('User_ID').eq(user)
+  )
+  items=response['Items']
+  # print(items)
+  return {
+    "statusCode": 200,
+    "headers": { 
+      'headerName': 'UICallRecordings_Metadata' 
+    },
+    "body": str(items),
+    "isBase64Encoded": False
+  }
