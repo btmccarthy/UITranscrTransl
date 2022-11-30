@@ -1,7 +1,7 @@
 # UITranscrTransl
 Repo for AWS lambda functions for Unemployment Insurance Transcribe / Translate workload / PoC
 
-The lambda functions will each be triggered by an S3 object creation event, except for lmbda_transcribe_text
+The lambda functions will each be triggered by an S3 object creation event, except for lambda_transcribe_text
 and lambda_APIGateway, which will be triggered by a transcribe job and API Gateway, respectively.
 
 There is an additional lambda function used for dumping DynamoDB data into S3 so the data can be 
