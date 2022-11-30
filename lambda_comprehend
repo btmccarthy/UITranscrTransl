@@ -1,0 +1,138 @@
+import json
+import boto3
+import urllib.request
+import uuid
+from botocore.client import Config
+
+s3_client = boto3.client('s3', config=Config(signature_version='s3v4'))
+dynamodb_resource = boto3.resource('dynamodb')
+translate_client = boto3.client('translate')
+comprehend_client = boto3.client('comprehend')
+
+# Generate a presigned URL for the S3 object
+def create_presigned_url(bucket_name, object_name, expiration=604800):
+    response_sign = s3_client.generate_presigned_url('get_object',
+        Params={
+            'Bucket': bucket_name,
+            'Key': object_name
+        },
+        ExpiresIn=expiration)
+      
+    #return url for future call
+    return response_sign
+    
+def lambda_handler(event, context):
+    # Get the object from the event and show its content type
+    bucket = event['Records'][0]['s3']['bucket']['name']
+    key = urllib.parse.unquote_plus(event['Records'][0]['s3']['object']['key'], encoding='utf-8')
+    
+    #End if accessing incorrect file
+    shortKey = str(key.split('en.', 1)[1])    
+    if shortKey == "auxiliary-translation-details.json":
+        return
+    
+    dynamoTable = dynamodb_resource.Table('UICallRecordings_Metadata')
+    jobName = key + '-' + str(uuid.uuid4()) 
+        
+    signed_transl_url = str(create_presigned_url(bucket,key))
+    print("URL: " + signed_transl_url)
+    
+    #run topics detection job
+    # response_topics = comprehend_client.start_topics_detection_job(
+    #     InputDataConfig = {
+    #         'S3Uri': 's3://ab-translate-output/'+key,
+    #         'InputFormat': 'ONE_DOC_PER_FILE'
+    #         },
+    #     OutputDataConfig={
+    #         'S3Uri': 's3://ab-comp-output/'
+    #         },
+    #     DataAccessRoleArn = 'arn:aws:iam::974656205436:role/service-role/ab_lambda_transcribe',
+    #     JobName = jobName,
+    #     NumberOfTopics=1
+    #     )
+    
+    #run key phrases detection job
+    # response_phrases = comprehend_client.start_key_phrases_detection_job(
+    #     InputDataConfig={
+    #         'S3Uri': 's3://ab-translate-output/'+key,
+    #         'InputFormat': 'ONE_DOC_PER_FILE'
+    #         },
+    #     OutputDataConfig={
+    #         'S3Uri': 's3://ab-comp-output/'
+    #         },
+    #     DataAccessRoleArn='arn:aws:iam::974656205436:role/service-role/ab_lambda_transcribe',
+    #     JobName=jobName,
+    #     LanguageCode='es'
+    #     )
+        
+    #run sentiment detection job
+    # response_tar_sentiment = comprehend_client.start_sentiment_detection_job(
+    #     InputDataConfig={
+    #         'S3Uri': 's3://ab-translate-output/'+key,
+    #         'InputFormat': 'ONE_DOC_PER_FILE'
+    #         },
+    #     OutputDataConfig={
+    #         'S3Uri': 's3://ab-comp-output/Sentiment'
+    #         },
+    #     DataAccessRoleArn='arn:aws:iam::974656205436:role/service-role/ab_lambda_transcribe',
+    #     JobName=jobName,
+    #     LanguageCode='en'            
+    #     )
+        
+    #run entity detection job
+    response_entity = comprehend_client.start_entities_detection_job(
+        InputDataConfig={
+            'S3Uri': 's3://ab-translate-output/'+key,
+            'InputFormat': 'ONE_DOC_PER_FILE'
+            },
+        OutputDataConfig={
+            'S3Uri': 's3://ab-comp-output/Entities'
+            },
+        DataAccessRoleArn='arn:aws:iam::974656205436:role/service-role/ab_lambda_transcribe',
+        JobName=jobName,
+        LanguageCode='en'            
+        )
+        
+    #run events detection job
+    # response_events = comprehend_client.start_events_detection_job(
+    #     InputDataConfig={
+    #         'S3Uri': 's3://ab-translate-output/'+key,
+    #         'InputFormat': 'ONE_DOC_PER_FILE'
+    #         },
+    #     OutputDataConfig={
+    #         'S3Uri': 's3://ab-comp-output/'
+    #         },
+    #     DataAccessRoleArn='arn:aws:iam::974656205436:role/service-role/ab_lambda_transcribe',
+    #     JobName=jobName,
+    #     LanguageCode='es'            
+    #     )
+    
+    #pull content from translate and store in data var
+    job_interm = str(key.split('TranslateText-', 1)[1])
+    transl_job = str(job_interm.split('/', 1)[0])
+    jobContent = translate_client.describe_text_translation_job(
+        JobId = transl_job
+        )
+    
+    # Post transcribe metadata into Dynamodb table
+    shorterKey = str(shortKey.split('-', 1)[1])
+    secondaryKey = str(shorterKey.split('.', 1)[0])
+    sourceLanguage = jobContent['TextTranslationJobProperties']['SourceLanguageCode']
+    targetLanguage = jobContent['TextTranslationJobProperties']['TargetLanguageCodes'][0]
+    status = jobContent['TextTranslationJobProperties']['JobStatus']
+    response_post = dynamoTable.update_item(
+        TableName = 'UICallRecordings_Metadata',
+        Key = {
+            'User_ID': str(shortKey.split('-', 1)[0]),
+            'Claim_ID': secondaryKey
+        },
+        UpdateExpression = "set Translation_URL = :u, Source_Language = :so, Target_Language = :t",
+        ExpressionAttributeValues = {
+            ':u': signed_transl_url,
+            ':so': sourceLanguage,
+            ':t': targetLanguage
+        },
+        ReturnValues="UPDATED_NEW"
+    )
+    
+    return response_post
